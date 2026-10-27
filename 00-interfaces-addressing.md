@@ -88,21 +88,3 @@ GRE-туннель: HQ-RTR <-> BR-RTR, сеть 10.10.10.0/24, интерфей�
 | HQ-SRV | hq-srv.au-team.irpo |
 | BR-SRV | br-srv.au-team.irpo |
 | HQ-CLI | hq-cli.au-team.irpo |
-
----
-
-## Ключевые отличия этого варианта от старой лабы (не перепутать!)
-
-| Параметр | Старая лаба | Этот вариант |
-|---|---|---|
-| Сеть ISP-HQ-RTR | 172.16.4.0/28 | 172.16.1.0/28 |
-| Сеть ISP-BR-RTR | 172.16.5.0/28 | 172.16.2.0/28 |
-| Пользователь на серверах | remote_user | sshuser (uid 2027) |
-| Порт SSH | 2026 | 2027 |
-| Пользователь на роутерах | net_admin | net_admin (без изменений) |
-| OSPF аутентификация | plaintext (authentication + authentication-key) | MD5 (authentication message-digest + message-digest-key) |
-| DNS forwarders | 8.8.8.8 | 77.88.8.7 / 77.88.8.3 |
-| Устройства | без BR-FW | + BR-FW между BR-RTR и BR-SRV |
-| GRE сеть | 10.10.10.0/30 фиксировано | 10.10.10.0/24, маску выбираете сами (минимальная - /30) |
-| NAT на ISP | обычный MASQUERADE | явно "трансляция портов" (PAT = тот же MASQUERADE по сути) |
-| PTR-записи в DNS | у hq-rtr тоже был PTR | PTR только у HQ-SRV и BR-SRV |
