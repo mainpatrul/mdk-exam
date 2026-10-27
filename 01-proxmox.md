@@ -520,12 +520,14 @@ systemctl restart sshd
 dnf install bind -y
 nano /etc/named.conf
 ```
-В блоке `options` изменить три строки:
+В блоке `options` изменить четыре строки:
 ```
 listen-on port 53 { any; };
 allow-query     { any; };
 forwarders      { 77.88.8.7; };
+dnssec-validation no;
 ```
+> Без `dnssec-validation no` внешние имена (yandex.ru и т.п.) не резолвятся: в журнале `broken trust chain`, `dig @127.0.0.1` - timed out / SERVFAIL.
 В конце файла должно получиться так (строки `include` там уже есть - их не дублировать, зоны вставить перед ними):
 ```
 zone "au-team.irpo" IN {
