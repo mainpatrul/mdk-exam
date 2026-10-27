@@ -11,7 +11,7 @@
 
 - **OSPF passive**: в тетради `passive-interface ens34` (у нас ens19) - VLAN-ы ens19.100/200/999 это отдельные интерфейсы, OSPF на них остаётся включён. У нас `passive-interface default` + `no passive-interface` только на нужных - ровно как в задании
 - **ISP / роутеры**: перед iptables выключаем firewalld, иначе они конфликтуют
-- **firewalld на серверах**: если он активен - открываем 2027/tcp и dns
+- **firewalld на HQ-SRV**: по заданию не нужен - выключаем (`systemctl disable --now firewalld`); на BR-SRV - если активен, открываем 2027/tcp
 - **DNS /opt/dns**: если named пишет `permission denied` - восстановить SELinux-контекст
 - **HQ-CLI**: DNS вручную не задаём - он должен прийти по DHCP
 
@@ -456,6 +456,7 @@ vtysh -c "show ip ospf interface tun0" | grep -i auth    # в отчёт: MD5 (�
 ```bash
 hostnamectl hostname hq-srv.au-team.irpo
 timedatectl set-timezone Europe/Moscow
+systemctl disable --now firewalld     # по заданию не нужен, иначе режет SSH 2027 и DNS
 ```
 
 ### VLAN100
@@ -494,7 +495,6 @@ Banner /etc/ssh/banner.txt
 ```bash
 semanage port -a -t ssh_port_t -p tcp 2027
 # если semanage нет: dnf install policycoreutils-python-utils -y
-firewall-cmd --permanent --add-port=2027/tcp && firewall-cmd --reload   # только если firewalld активен
 sshd -t                          # нет вывода = конфиг без ошибок
 systemctl restart sshd
 ```
@@ -614,7 +614,6 @@ chown -R named:named /opt/dns/
 named-checkconf -z            # проверить, исправить ошибки если есть
 systemctl enable --now named
 systemctl restart named
-firewall-cmd --permanent --add-service=dns && firewall-cmd --reload   # только если firewalld активен
 nslookup hq-srv.au-team.irpo 127.0.0.1
 ```
 > Если в `journalctl -u named` есть `permission denied` на файлы зон - это SELinux:
