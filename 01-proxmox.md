@@ -558,7 +558,7 @@ nano au-team.irpo
 ```
 ```
 $TTL 3H
-au-team.irpo.   IN SOA  au-team.irpo. root.au-team.irpo. (
+@       IN SOA  au-team.irpo. root.au-team.irpo. (
                                         0       ; serial
                                         1D      ; refresh
                                         1H      ; retry
