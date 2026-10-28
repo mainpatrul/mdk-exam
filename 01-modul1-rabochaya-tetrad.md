@@ -1,327 +1,146 @@
-# Модуль 1 - Настройка сетевой инфраструктуры (по рабочей тетради)
+# Задание 1 (Модуль 1) - Настройка сетевой инфраструктуры (по рабочей тетради, ens33/34/35)
 
-Переписано из `Рабочая_тетраль_ДЭ_Модуль_1_финал_проверенно.docx` один в один, скриншоты переведены в текст.
-Для тренировки на своём Proxmox. Разбор с исправлениями - в `01-zadanie1-baznaya-nastroyka.md`.
+То же, что `01-proxmox.md`, но с интерфейсами из тетради преподавателя (ens33/34/35 вместо ens18/19/20).
 
-Итоговый отчёт: одна таблица и пять отчётов о ходе работы, сохранить на диске рабочего места.
+Продолжительность: 1 ч.
+Источники: `Рабочая_тетраль_ДЭ_Модуль_1_финал_проверенно.docx` (адреса, DNS-записи) и `1 модуль Задание 2027.docx` (текст задания).
+Отчёт: ФамилияУчастникаЗадание1 - **одна таблица (адресация) и пять отчётов**: VLAN, GRE, OSPF, DHCP + пункты "в отчёт". Скриншоты читаемые.
+
+Настройка разложена **по устройствам** - заходишь на ВМ и делаешь всё сверху вниз.
+Порядок ВМ: ISP -> HQ-RTR -> BR-RTR -> BR-FW -> HQ-SRV -> BR-SRV -> HQ-CLI -> общий финал -> проверка.
+
+## Где мы отличаемся от тетради (и почему)
+
+- **OSPF passive**: в тетради `passive-interface ens34` - VLAN-ы ens34.100/200/999 это отдельные интерфейсы, OSPF на них остаётся включён. У нас `passive-interface default` + `no passive-interface` только на нужных - ровно как в задании
+- **ISP / роутеры**: перед iptables выключаем firewalld, иначе они конфликтуют
+- **firewalld на HQ-SRV**: по заданию не нужен - выключаем (`systemctl disable --now firewalld`); на BR-SRV - если активен, открываем 2027/tcp
+- **DNS /opt/dns**: если named пишет `permission denied` - восстановить SELinux-контекст
+- **HQ-CLI**: DNS вручную не задаём - он должен прийти по DHCP
 
 ---
 
-## 0. Линки в Proxmox
+## Схема (Рисунок 1) с адресами
 
-Мосты: узел -> System -> Network -> Create -> Linux Bridge (IP не указывать, Bridge ports пусто). vmbr0 - выход в интернет (уже есть).
+```
+                          Internet
+                             | ens33 (DHCP)
+        ISP-HQ ens34 ——————— ISP ——————— ens35 ISP-BR
+        172.16.1.0/28                     172.16.2.0/28
+             | ens33 .2                        | ens33 .2
+          HQ-RTR ====== GRE tun0 10.10.10.0/30 ====== BR-RTR
+             | ens34 (trunk)                   | ens34 .1
+          HQ-NET: VLAN 100/200/999          FW-NET 172.30.100.0/30
+             |                                 | ens33 .2
+           HQ-SW                             BR-FW
+          /      \                             | ens34 .1
+   SRV-NET        CLI-NET                   BR-NET 172.30.200.0/28
+   VLAN100 /27    VLAN200 /28                  | ens33 .10
+   192.168.100.0  192.168.200.0              BR-SRV
+      | .10          | DHCP
+   HQ-SRV         HQ-CLI
+```
 
-| Мост | Линк | Кто подключён |
+- HQ-SW - это мост vmbr3 в Proxmox; VLAN-ы ставят сами ВМ (ens34.100 и т.д.).
+- VLAN 999 (192.168.99.0/29) - сеть управления, только на HQ-RTR.
+
+## Линки в Proxmox (Hardware -> Add -> Network Device)
+
+Мосты: узел -> System -> Network -> Create -> Linux Bridge (IP не указывать, Bridge ports пусто). vmbr0 уже есть - выход в интернет.
+
+| Мост | Линк на схеме | Кто подключён |
 |---|---|---|
 | vmbr0 | Internet | ISP |
 | vmbr1 | ISP-HQ | ISP, HQ-RTR |
 | vmbr2 | ISP-BR | ISP, BR-RTR |
-| vmbr3 | HQ-NET / SRV-NET / CLI-NET (HQ-SW) | HQ-RTR, HQ-SRV, HQ-CLI |
+| vmbr3 | HQ-NET + SRV-NET + CLI-NET (HQ-SW) | HQ-RTR, HQ-SRV, HQ-CLI |
 | vmbr4 | FW-NET | BR-RTR, BR-FW |
 | vmbr5 | BR-NET | BR-FW, BR-SRV |
 
-Hardware -> Add -> Network Device, по порядку:
+Карты добавлять строго по порядку: первая - ens33, вторая - ens34, третья - ens35.
 
 | ВМ | ens33 | ens34 | ens35 |
 |---|---|---|---|
-| ISP | vmbr0 | vmbr1 | vmbr2 |
-| HQ-RTR | vmbr1 | vmbr3 | - |
-| BR-RTR | vmbr2 | vmbr4 | - |
-| BR-FW | vmbr4 | vmbr5 | - |
+| ISP | vmbr0 (интернет) | vmbr1 (к HQ-RTR) | vmbr2 (к BR-RTR) |
+| HQ-RTR | vmbr1 (к ISP) | vmbr3 (VLAN-ы к HQ-SW) | - |
+| BR-RTR | vmbr2 (к ISP) | vmbr4 (к BR-FW) | - |
+| BR-FW | vmbr4 (к BR-RTR) | vmbr5 (к BR-SRV) | - |
 | HQ-SRV | vmbr3 | - | - |
 | HQ-CLI | vmbr3 | - | - |
 | BR-SRV | vmbr5 | - | - |
 
-VLAN Tag - пусто, Firewall - снять. Имена внутри ВМ проверить `ip a`.
+VLAN Tag на картах - пусто, галку Firewall снять. Имена проверять `ip a`. В Proxmox (virtio) эти же карты называются ens18/ens19/ens20 - см. `01-proxmox.md`.
 
----
+## Таблица адресации (в отчёт)
 
-## 1. Базовая настройка устройств
+| Имя устройства | IP-адрес | Шлюз по умолчанию |
+|---|---|---|
+| ISP | ens33: DHCP; ens34: 172.16.1.1/28; ens35: 172.16.2.1/28 | DHCP |
+| HQ-RTR | ens33: 172.16.1.2/28; ens34.100: 192.168.100.1/27; ens34.200: 192.168.200.1/28; ens34.999: 192.168.99.1/29; tun0: 10.10.10.1/30 | 172.16.1.1 |
+| BR-RTR | ens33: 172.16.2.2/28; ens34: 172.30.100.1/30; tun0: 10.10.10.2/30 | 172.16.2.1 |
+| HQ-SRV | ens33.100: 192.168.100.10/27 | 192.168.100.1 |
+| BR-FW | ens33: 172.30.100.2/30; ens34: 172.30.200.1/28 | 172.30.100.1 |
+| BR-SRV | ens33: 172.30.200.10/28 | 172.30.200.1 |
+| HQ-CLI | ens33.200: DHCP (192.168.200.2-14) | DHCP (192.168.200.1) |
 
-**Имена** - полное доменное имя:
+Маски: VLAN100 ≤32 -> /27; VLAN200 ≤16 -> /28; VLAN999 ≤8 -> /29; BR-FW-BR-RTR минимальная -> /30; BR-SRV ≤16 -> /28; GRE из 10.10.10.0/24 минимальная -> /30.
+
+## Общие действия (на каждой ВМ)
+
+Имя и часовой пояс (на всех, кроме HQ-SW):
 ```bash
-hostnamectl hostname host-name.au-team.irpo    # host-name: hq-srv, br-rtr и т.д.
+hostnamectl hostname <имя>.au-team.irpo    # isp / hq-rtr / br-rtr / br-fw / hq-srv / br-srv / hq-cli
+timedatectl set-timezone Europe/Moscow     # пояс места проведения экзамена
+timedatectl                                # проверить зону
 ```
 
-**IPv4:**
+IP через nmtui:
 ```
-nmtui > Изменить подключение > Выбираем нужный интерфейс > Стрелочка вправо > Изменить >
-Конфигурация IPv4: Автоматически -> Вручную > Показать > Адреса > Добавить
-задаём IP-адрес и при необходимости шлюз и серверы DNS > OK
+nmtui -> Изменить подключение -> интерфейс -> Изменить
+Конфигурация IPv4: Автоматически -> Вручную -> Показать
+Адреса -> Добавить -> IP/маска; Шлюз; Серверы DNS -> OK
+nmcli connection up <интерфейс>
 ```
+DNS на этапе настройки - DNS стенда (у преподавателя 10.39.0.1, дома - 8.8.8.8), иначе не работает `dnf`.
+После того как поднят DNS на HQ-SRV - меняем на 192.168.100.10 (см. "Общий финал").
 
-Скриншот nmtui (ens33):
-```
-Имя профиля   ens33
-Устройство    ens33
-КОНФИГУРАЦИЯ IPv4  <Вручную>                <Скрыть>
-  Адреса       <Добавить...>
-  Шлюз         ____
-  Серверы DNS  <Добавить...>
-  Домены поиска <Добавить...>
-[X] Подключаться автоматически
-[X] Доступно всем пользователям
-                                         <Отменить> <OK>
-```
-
-На этом пункте настраиваем все интерфейсы на ISP, BR-RTR, BR-FW, BR-SRV. На HQ-RTR - только интерфейс в сторону ISP.
-Интерфейсы HQ-RTR, HQ-SRV и HQ-CLI в локальной сети HQ настраиваются в пункте 4.
-
-Применить изменения:
-```bash
-nmcli connection up INTERFACE     # например: nmcli connection up ens33
-```
-
-На маршрутизаторах (ISP / BR-RTR / HQ-RTR) и межсетевом экране (BR-FW) - пересылка пакетов:
+Пересылка пакетов (только ISP, HQ-RTR, BR-RTR, BR-FW):
 ```bash
 echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
 sysctl -p
 ```
 
-**Адресация** (приватные диапазоны RFC1918: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16):
+---
 
-| Сеть | Требование | Маска | Сеть |
-|---|---|---|---|
-| к HQ-SRV (VLAN100) | не более 32 адресов | 255.255.255.224 /27 | 192.168.100.0/27 |
-| к HQ-CLI (VLAN200) | не более 16 адресов | 255.255.255.240 /28 | 192.168.200.0/28 |
-| управление (VLAN999) | не более 8 адресов | 255.255.255.248 /29 | 192.168.99.0/29 |
-| BR-FW - BR-RTR | минимальная | 255.255.255.252 /30 | 172.30.100.0/30 |
-| к BR-SRV | не более 16 адресов | 255.255.255.240 /28 | 172.30.200.0/28 |
+## 1. ISP
 
-**Таблица адресации (в отчёт):**
+- [ ] ens33 (к провайдеру) - DHCP
+- [ ] ens34 -> 172.16.1.1/28, ens35 -> 172.16.2.1/28
+- [ ] NAT для HQ-RTR и BR-RTR
 
-| Имя устройства | IP-адрес | Шлюз по умолчанию |
+```bash
+hostnamectl hostname isp.au-team.irpo
+timedatectl set-timezone Europe/Moscow
+```
+
+IP (nmtui):
+| Интерфейс | IPv4 | Шлюз |
 |---|---|---|
-| ISP | ens33: DHCP<br>ens34: 172.16.1.1/28<br>ens35: 172.16.2.1/28 | |
-| HQ-RTR | ens33: 172.16.1.2/28<br>ens34.vlan100: 192.168.100.1/27<br>ens34.vlan200: 192.168.200.1/28<br>ens34.vlan999: 192.168.99.1/29 | ens33: 172.16.1.1 |
-| BR-RTR | ens33: 172.16.2.2/28<br>ens34: 172.30.100.1/30 | ens33: 172.16.2.1 |
-| HQ-SRV | ens33.vlan100: 192.168.100.10/27 | ens33: 192.168.100.1 |
-| BR-FW | ens33: 172.30.100.2/30<br>ens34: 172.30.200.1/28 | ens33: 172.30.100.1 |
-| BR-SRV | ens33: 172.30.200.10/28 | ens33: 172.30.200.1 |
-| HQ-CLI | ens33.vlan200: DHCP | DHCP |
+| ens33 | Автоматически (DHCP) | - |
+| ens34 | 172.16.1.1/28 | - |
+| ens35 | 172.16.2.1/28 | - |
 
----
-
-## 2. Настройка ISP
-
-- ens33 (к магистральному провайдеру) - DHCP
-- маршруты по умолчанию там, где необходимо
-- к HQ-RTR - сеть 172.16.1.0/28, к BR-RTR - 172.16.2.0/28
-- динамическая трансляция в сторону HQ-RTR и BR-RTR
-
-На ISP:
 ```bash
+nmcli connection up ens34
+nmcli connection up ens35
+
+echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+sysctl -p
+```
+
+NAT:
+```bash
+systemctl disable --now firewalld
 dnf install iptables-services -y
-systemctl enable --now iptables
-iptables -F
-iptables -A FORWARD -s 172.16.0.0/16 -j ACCEPT
-iptables -A FORWARD -d 172.16.0.0/16 -j ACCEPT
-iptables -t nat -A POSTROUTING -o ens33 -s 172.16.0.0/16 -j MASQUERADE
-iptables-save > /etc/sysconfig/iptables
-```
-Проверяем пинги на 8.8.8.8 с HQ-RTR и BR-RTR.
-
----
-
-## 3. Локальные учётные записи
-
-**sshuser** на HQ-SRV и BR-SRV (пароль P@ssw0rd, UID 2027, sudo без пароля):
-```bash
-useradd -m -U -s /bin/bash -u 2027 sshuser
-passwd sshuser
-# P@ssw0rd
-# P@ssw0rd
-echo "sshuser ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
-```
-
-**net_admin** на HQ-RTR и BR-RTR (пароль P@ssw0rd, sudo без пароля):
-```bash
-useradd -m -U -s /bin/bash net_admin
-passwd net_admin
-# P@ssw0rd
-# P@ssw0rd
-echo "net_admin ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
-```
-
----
-
-## 4. Виртуальный коммутатор (VLAN) на HQ-RTR
-
-- HQ-SRV - VLAN 100, HQ-CLI - VLAN 200, подсеть управления - VLAN 999
-- сведения о настройке и выборе реализации VLAN - в отчёт
-
-```
-nmtui > Изменить подключение > Добавить > VLAN
-```
-Выполняем на HQ-RTR - ens34, HQ-SRV - ens33, HQ-CLI - ens33. Для HQ-CLI и HQ-SRV указываем шлюз и серверы DNS.
-
-Скриншот nmtui (HQ-RTR, VLAN100):
-```
-Имя профиля         VLAN100
-Устройство          ens34.100
-VLAN
-  Родительский      ens34
-  Идентификатор VLAN 100
-КОНФИГУРАЦИЯ IPv4   <Вручную>
-  Адреса            <Добавить...>
-  Шлюз              ____
-  Серверы DNS       <Добавить...>
-```
-
-| Где | Профиль | Устройство | Родитель | ID | Адрес |
-|---|---|---|---|---|---|
-| HQ-RTR | VLAN100 | ens34.100 | ens34 | 100 | 192.168.100.1/27 |
-| HQ-RTR | VLAN200 | ens34.200 | ens34 | 200 | 192.168.200.1/28 |
-| HQ-RTR | VLAN999 | ens34.999 | ens34 | 999 | 192.168.99.1/29 |
-| HQ-SRV | VLAN100 | ens33.100 | ens33 | 100 | 192.168.100.10/27, шлюз 192.168.100.1 |
-| HQ-CLI | VLAN200 | ens33.200 | ens33 | 200 | DHCP |
-
----
-
-## 5. Безопасный удалённый доступ на HQ-SRV и BR-SRV
-
-- порт 2027, только sshuser, 2 попытки входа, баннер «Authorized access only»
-
-Создаём баннер:
-```bash
-echo "Authorized access only" > /etc/ssh/banner.txt
-```
-
-Настраиваем SSH:
-```bash
-nano /etc/ssh/sshd_config
-```
-```
-Port 2027
-AllowUsers sshuser
-MaxAuthTries 2
-Banner /etc/ssh/banner.txt
-```
-
-Открываем порт:
-```bash
-semanage port -a -t ssh_port_t -p tcp 2027
-```
-(либо отключаем SELinux: в `/etc/selinux/config` меняем `SELINUX=enforcing` на `SELINUX=disabled` и `reboot`)
-
-Проверяем с HQ-RTR и BR-FW доступ до серверов своей локальной сети:
-```bash
-ssh -l sshuser 172.30.200.10 -p 2027     # с BR-FW
-ssh -l sshuser 192.168.100.10 -p 2027    # с HQ-RTR
-```
-
----
-
-## 6. IP-туннель между офисами HQ и BR
-
-- GRE, диапазон 10.10.10.0/24, минимальная маска; сведения - в отчёт
-
-```
-nmtui > стрелочка вправо > Добавить > IP-туннель   (не забыть режим GRE)
-```
-
-Скриншот HQ-RTR:
-```
-Имя профиля   tun0
-Устройство    tun0
-Туннель IP
-  Режим           <GRE>
-  Родительский    ens33
-  Локальный IP    172.16.1.2
-  Удалённый IP    172.16.2.2
-КОНФИГУРАЦИЯ IPv4 <Вручную>
-  Адреса          10.10.10.1/30
-```
-
-Скриншот BR-RTR:
-```
-Имя профиля   tun0
-Устройство    tun0
-Туннель IP
-  Режим           <GRE>
-  Родительский    ens33
-  Локальный IP    172.16.2.2
-  Удалённый IP    172.16.1.2
-КОНФИГУРАЦИЯ IPv4 <Вручную>
-  Адреса          10.10.10.2/30
-```
-
-После этого на обоих роутерах:
-```bash
-nmcli connection modify tun0 ip-tunnel.ttl 64
-```
-и перезапускаем туннель через nmtui (выключаем и включаем интерфейс).
-Проверяем пинги с двух роутеров на 10.10.10.1 и 10.10.10.2.
-
----
-
-## 7. Динамическая маршрутизация (OSPF)
-
-- HQ-RTR, BR-RTR, BR-FW; сети одного офиса доступны из другого
-- только на интерфейсах туннеля на HQ-RTR и BR-RTR, на BR-FW - только интерфейс к BR-RTR
-- аутентификация на HQ-RTR и BR-RTR, пароль P@ssw0rd, хеш MD5; сведения - в отчёт
-
-На HQ-RTR, BR-RTR и BR-FW:
-```bash
-dnf install frr
-systemctl enable --now frr
-nano /etc/frr/daemons       # заменить no на yes: ospfd=yes
-systemctl restart frr
-```
-
-```
-vtysh
-conf t
-router ospf
-```
-Дальше работа как в Cisco:
-
-HQ-RTR:
-```
-network 192.168.100.0/27 area 0
-network 192.168.200.0/28 area 0
-network 192.168.99.0/29 area 0
-network 10.10.10.0/30 area 0
-ospf router-id 172.16.1.2
-passive-interface ens33
-passive-interface ens34
-```
-
-BR-RTR:
-```
-network 172.30.100.0/30 area 0
-network 10.10.10.0/30 area 0
-ospf router-id 172.16.2.2
-passive-interface ens33
-```
-
-BR-FW:
-```
-network 172.30.100.0/30 area 0
-network 172.30.200.0/28 area 0
-ospf router-id 172.30.100.2
-passive-interface ens34
-```
-
-HQ-RTR и BR-RTR - аутентификация:
-```
-exit
-interface tun0
-ip ospf authentication message-digest
-ip ospf message-digest-key 1 md5 P@ssw0rd
-do wr
-exit
-exit
-exit
-```
-
----
-
-## 8. Динамическая трансляция адресов
-
-На HQ-RTR и BR-RTR:
-```bash
-dnf install iptables-services
 systemctl enable --now iptables
 iptables -F
 iptables -t nat -A POSTROUTING -o ens33 -j MASQUERADE
@@ -330,38 +149,363 @@ iptables-save > /etc/sysconfig/iptables
 
 ---
 
-## 9. DHCP
-
-- сервер - HQ-RTR, клиент - HQ-CLI, адрес роутера исключён
-- шлюз - HQ-RTR, DNS - HQ-SRV, суффикс au-team.irpo; сведения - в отчёт
+## 2. HQ-RTR
 
 ```bash
-dnf install dhcp-server
+hostnamectl hostname hq-rtr.au-team.irpo
+timedatectl set-timezone Europe/Moscow
+```
+
+### IP к ISP + пересылка
+| Интерфейс | IPv4 | Шлюз | DNS |
+|---|---|---|---|
+| ens33 | 172.16.1.2/28 | 172.16.1.1 | DNS стенда |
+| ens34 | отключено (только родитель VLAN) | - | - |
+
+```bash
+nmcli connection up ens33
+echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+sysctl -p
+ping -c 2 8.8.8.8          # проверка NAT на ISP
+```
+
+### Пользователь net_admin
+```bash
+useradd -m -U -s /bin/bash net_admin
+passwd net_admin                # P@ssw0rd два раза
+echo "net_admin ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+```
+> Кавычки только прямые `"`. «Ёлочки» и “фигурные” из Word ломают sudoers.
+
+### NAT
+```bash
+systemctl disable --now firewalld
+dnf install iptables-services -y
+systemctl enable --now iptables
+iptables -F
+iptables -t nat -A POSTROUTING -o ens33 -j MASQUERADE
+iptables-save > /etc/sysconfig/iptables
+```
+
+### VLAN (в отчёт!)
+- [ ] VLAN 100 (HQ-SRV), 200 (HQ-CLI), 999 (управление) - на одном адаптере ens34
+
+nmtui -> Изменить подключение -> Добавить -> VLAN:
+| Имя профиля | Устройство | Родитель | VLAN ID | IPv4 |
+|---|---|---|---|---|
+| VLAN100 | ens34.100 | ens34 | 100 | 192.168.100.1/27 |
+| VLAN200 | ens34.200 | ens34 | 200 | 192.168.200.1/28 |
+| VLAN999 | ens34.999 | ens34 | 999 | 192.168.99.1/29 |
+
+```bash
+nmcli connection up VLAN100
+nmcli connection up VLAN200
+nmcli connection up VLAN999
+ip -d link show ens34.100       # скрин в отчёт: vlan id 100
+```
+Для отчёта: VLAN реализованы на HQ-RTR подинтерфейсами 802.1Q на одном адаптере ens34 (router-on-a-stick); HQ-SW - мост Proxmox, передающий тегированный трафик.
+
+### GRE (в отчёт!)
+- [ ] GRE, сеть из 10.10.10.0/24, маска /30
+
+nmtui -> Добавить -> IP-туннель:
+| Поле | Значение |
+|---|---|
+| Имя профиля / Устройство | tun0 |
+| Режим | GRE |
+| Родительский | ens33 |
+| Локальный IP | 172.16.1.2 |
+| Удалённый IP | 172.16.2.2 |
+| IPv4 (Вручную) | 10.10.10.1/30, шлюз пусто |
+
+```bash
+nmcli connection modify tun0 ip-tunnel.ttl 64
+nmcli connection down tun0
+nmcli connection up tun0
+```
+> TTL 64 обязателен: по умолчанию внешний GRE-пакет берёт TTL из внутреннего, а у OSPF он = 1 -
+> пакеты умирают на ISP. Ping при этом работает, а OSPF-соседства нет.
+
+### OSPF с MD5 (в отчёт!)
+- [ ] только на туннеле, MD5, пароль P@ssw0rd
+
+**Шаг 1. Установить FRR** (пакет с протоколами маршрутизации):
+```bash
+dnf install frr -y
+```
+
+**Шаг 2. Включить демон OSPF.** FRR - набор отдельных программ (демонов), по одной на протокол.
+Какие запускать, задаёт файл `/etc/frr/daemons`. После установки там `ospfd=no` - надо `yes`.
+
+Вариант А - через nano:
+```bash
+nano /etc/frr/daemons
+```
+- найти строку `ospfd=no` (`Ctrl+W`, ввести `ospfd`, `Enter`)
+- исправить `no` на `yes` -> `ospfd=yes`
+- сохранить `Ctrl+O`, `Enter`, выйти `Ctrl+X`
+
+Вариант Б - одной командой:
+```bash
+sed -i 's/^ospfd=no/ospfd=yes/' /etc/frr/daemons
+```
+(`sed` - правка текста из командной строки, `-i` - сохранить в файл, `s/что/на что/` - заменить, `^` - "в начале строки")
+
+**Шаг 3. Проверить:**
+```bash
+grep ospfd= /etc/frr/daemons      # ожидаем: ospfd=yes
+```
+
+**Шаг 4. Запустить FRR** (restart - чтобы перечитал daemons):
+```bash
+systemctl enable --now frr
+systemctl restart frr
+```
+
+**Шаг 5. Настроить OSPF:**
+```
+vtysh
+conf t
+router ospf
+ ospf router-id 172.16.1.2
+ passive-interface default
+ no passive-interface tun0
+ network 10.10.10.0/30 area 0
+ network 192.168.100.0/27 area 0
+ network 192.168.200.0/28 area 0
+ network 192.168.99.0/29 area 0
+exit
+interface tun0
+ ip ospf authentication message-digest
+ ip ospf message-digest-key 1 md5 P@ssw0rd
+exit
+do wr
+end
+exit
+```
+
+### DHCP для HQ-CLI (в отчёт!)
+- [ ] адрес роутера исключён, шлюз - HQ-RTR, DNS - HQ-SRV, суффикс au-team.irpo
+
+```bash
+dnf install dhcp-server -y
 nano /etc/dhcp/dhcpd.conf
 ```
 ```
 subnet 192.168.200.0 netmask 255.255.255.240 {
-range 192.168.200.2 192.168.200.14;
-option routers 192.168.200.1;
-option domain-name-servers 192.168.100.10;
-option domain-name "au-team.irpo";
+  range 192.168.200.2 192.168.200.14;
+  option routers 192.168.200.1;
+  option domain-name-servers 192.168.100.10;
+  option domain-name "au-team.irpo";
 }
 ```
 ```bash
+dhcpd -t -cf /etc/dhcp/dhcpd.conf     # проверка конфига
 systemctl enable --now dhcpd
-dhcpd
 ```
-Получаем адрес на HQ-CLI: выключаем и включаем интерфейс ens33.vlan200.
-Проверяем на HQ-RTR запись о выдаче адреса клиенту:
+> 192.168.200.1 не входит в range - адрес маршрутизатора исключён.
+
+---
+
+## 3. BR-RTR
+
 ```bash
-cat /var/lib/dhcpd/dhcpd.leases
+hostnamectl hostname br-rtr.au-team.irpo
+timedatectl set-timezone Europe/Moscow
+```
+
+### IP + пересылка
+| Интерфейс | IPv4 | Шлюз | DNS |
+|---|---|---|---|
+| ens33 | 172.16.2.2/28 | 172.16.2.1 | DNS стенда |
+| ens34 | 172.30.100.1/30 | - | - |
+
+```bash
+nmcli connection up ens33
+nmcli connection up ens34
+echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+sysctl -p
+ping -c 2 8.8.8.8
+```
+
+### Пользователь net_admin
+```bash
+useradd -m -U -s /bin/bash net_admin
+passwd net_admin                # P@ssw0rd два раза
+echo "net_admin ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+```
+
+### NAT
+```bash
+systemctl disable --now firewalld
+dnf install iptables-services -y
+systemctl enable --now iptables
+iptables -F
+iptables -t nat -A POSTROUTING -o ens33 -j MASQUERADE
+iptables-save > /etc/sysconfig/iptables
+```
+
+### GRE
+nmtui -> Добавить -> IP-туннель:
+| Поле | Значение |
+|---|---|
+| Имя профиля / Устройство | tun0 |
+| Режим | GRE |
+| Родительский | ens33 |
+| Локальный IP | 172.16.2.2 |
+| Удалённый IP | 172.16.1.2 |
+| IPv4 (Вручную) | 10.10.10.2/30, шлюз пусто |
+
+```bash
+nmcli connection modify tun0 ip-tunnel.ttl 64
+nmcli connection down tun0
+nmcli connection up tun0
+ping -c 2 10.10.10.1
+```
+
+### OSPF с MD5
+FRR - так же, как на HQ-RTR (шаги 1-4):
+```bash
+dnf install frr -y
+nano /etc/frr/daemons           # ospfd=no -> ospfd=yes, сохранить
+grep ospfd= /etc/frr/daemons    # ожидаем: ospfd=yes
+systemctl enable --now frr
+systemctl restart frr
+```
+```
+vtysh
+conf t
+router ospf
+ ospf router-id 172.16.2.2
+ passive-interface default
+ no passive-interface tun0
+ no passive-interface ens34
+ network 10.10.10.0/30 area 0
+ network 172.30.100.0/30 area 0
+exit
+interface tun0
+ ip ospf authentication message-digest
+ ip ospf message-digest-key 1 md5 P@ssw0rd
+exit
+do wr
+end
+exit
+```
+> ens34 (к BR-FW) не пассивный - иначе BR-FW не станет соседом и сеть BR-SRV не попадёт в HQ.
+> Аутентификация только на tun0 (задание требует её между HQ-RTR и BR-RTR).
+
+---
+
+## 4. BR-FW
+
+- [ ] в OSPF только интерфейс к BR-RTR
+
+```bash
+hostnamectl hostname br-fw.au-team.irpo
+timedatectl set-timezone Europe/Moscow
+```
+
+### IP + пересылка
+| Интерфейс | IPv4 | Шлюз | DNS |
+|---|---|---|---|
+| ens33 | 172.30.100.2/30 | 172.30.100.1 | DNS стенда |
+| ens34 | 172.30.200.1/28 | - | - |
+
+```bash
+nmcli connection up ens33
+nmcli connection up ens34
+echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+sysctl -p
+systemctl disable --now firewalld     # чтобы не резал форвард и OSPF
+ping -c 2 8.8.8.8
+```
+> NAT на BR-FW не нужен - его делает BR-RTR.
+
+### OSPF (без аутентификации)
+```bash
+dnf install frr -y
+nano /etc/frr/daemons           # ospfd=no -> ospfd=yes, сохранить
+grep ospfd= /etc/frr/daemons    # ожидаем: ospfd=yes
+systemctl enable --now frr
+systemctl restart frr
+```
+```
+vtysh
+conf t
+router ospf
+ ospf router-id 172.30.100.2
+ passive-interface default
+ no passive-interface ens33
+ network 172.30.100.0/30 area 0
+ network 172.30.200.0/28 area 0
+exit
+do wr
+end
+exit
+```
+
+Проверка OSPF (на HQ-RTR, BR-RTR, BR-FW):
+```bash
+vtysh -c "show ip ospf neighbor"                         # Full
+vtysh -c "show ip route ospf"                            # на HQ-RTR есть 172.30.200.0/28
+vtysh -c "show ip ospf interface tun0" | grep -i auth    # в отчёт: MD5 (на роутерах)
 ```
 
 ---
 
-## 10. DNS для офисов HQ и BR
+## 5. HQ-SRV
 
-- основной DNS - HQ-SRV, прямое и обратное разрешение по таблице, пересылка на общедоступный DNS
+```bash
+hostnamectl hostname hq-srv.au-team.irpo
+timedatectl set-timezone Europe/Moscow
+systemctl disable --now firewalld     # по заданию не нужен, иначе режет SSH 2027 и DNS
+```
+
+### VLAN100
+nmtui -> Добавить -> VLAN:
+| Имя профиля | Устройство | Родитель | VLAN ID | IPv4 | Шлюз | DNS |
+|---|---|---|---|---|---|---|
+| VLAN100 | ens33.100 | ens33 | 100 | 192.168.100.10/27 | 192.168.100.1 | DNS стенда |
+
+У самого ens33 IPv4 - отключено.
+```bash
+nmcli connection up VLAN100
+ping -c 2 8.8.8.8
+```
+
+### Пользователь sshuser
+```bash
+useradd -m -U -s /bin/bash -u 2027 sshuser
+passwd sshuser                  # P@ssw0rd два раза
+echo "sshuser ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+id sshuser                      # uid=2027
+```
+
+### SSH
+- [ ] порт 2027, только sshuser, 2 попытки, баннер «Authorized access only»
+
+```bash
+echo "Authorized access only" > /etc/ssh/banner.txt
+nano /etc/ssh/sshd_config
+```
+```
+Port 2027
+AllowUsers sshuser
+MaxAuthTries 2
+Banner /etc/ssh/banner.txt
+```
+```bash
+semanage port -a -t ssh_port_t -p tcp 2027
+# если semanage нет: dnf install policycoreutils-python-utils -y
+sshd -t                          # нет вывода = конфиг без ошибок
+systemctl restart sshd
+```
+> Запасной вариант из тетради: в `/etc/selinux/config` поставить `SELINUX=disabled` и `reboot`.
+
+Проверка с HQ-RTR: `ssh -l sshuser 192.168.100.10 -p 2027`
+
+### DNS (bind)
+- [ ] основной DNS, прямые и обратные записи по таблице, пересылка на общедоступный DNS
 
 | Устройство | Запись | Тип |
 |---|---|---|
@@ -375,21 +519,18 @@ cat /var/lib/dhcpd/dhcpd.leases
 | ISP (к BR-RTR) | web.au-team.irpo | A |
 
 ```bash
-dnf install bind
+dnf install bind -y
 nano /etc/named.conf
 ```
-Изменить строчки (на скрине отмечены стрелками):
+В блоке `options` изменить четыре строки:
 ```
-options {
-        listen-on port 53 { any; };          <--
-        listen-on-v6 port 53 { ::1; };
-        directory       "/var/named";
-        ...
-        allow-query     { any; };            <--
-        forwarders      { 77.88.8.7; };      <--
+listen-on port 53 { any; };
+allow-query     { any; };
+forwarders      { 77.88.8.7; };
+dnssec-validation no;
 ```
-
-В конец добавить:
+> Без `dnssec-validation no` внешние имена (yandex.ru и т.п.) не резолвятся: в журнале `broken trust chain`, `dig @127.0.0.1` - timed out / SERVFAIL.
+В конце файла должно получиться так (строки `include` там уже есть - их не дублировать, зоны вставить перед ними):
 ```
 zone "au-team.irpo" IN {
         type master;
@@ -410,7 +551,7 @@ include "/etc/named.rfc1912.zones";
 include "/etc/named.root.key";
 ```
 
-Копируем шаблон и заполняем:
+Прямая зона:
 ```bash
 mkdir /opt/dns
 cd /opt/dns
@@ -437,6 +578,7 @@ docker  A       172.16.1.1
 web     A       172.16.2.1
 ```
 
+Обратная зона HQ:
 ```bash
 cp /var/named/named.empty 100.168.192.in-addr.arpa
 nano 100.168.192.in-addr.arpa
@@ -453,6 +595,7 @@ $TTL 3H
 10      PTR     hq-srv.au-team.irpo.
 ```
 
+Обратная зона BR:
 ```bash
 cp /var/named/named.empty 200.30.172.in-addr.arpa
 nano 200.30.172.in-addr.arpa
@@ -469,56 +612,127 @@ $TTL 3H
 10      PTR     br-srv.au-team.irpo.
 ```
 
+Запуск:
 ```bash
 chown -R named:named /opt/dns/
-named-checkconf -z          # проверяем конфигурацию, исправляем ошибки если есть
+named-checkconf -z            # проверить, исправить ошибки если есть
+systemctl enable --now named
 systemctl restart named
+nslookup hq-srv.au-team.irpo 127.0.0.1
 ```
+> Если в `journalctl -u named` есть `permission denied` на файлы зон - это SELinux:
+> `semanage fcontext -a -t named_zone_t "/opt/dns(/.*)?" && restorecon -Rv /opt/dns && systemctl restart named`
 
-Далее в nmtui меняем DNS-сервер с 8.8.8.8 (10.39.0.1) на 192.168.100.10, домен поиска au-team.irpo.
-Затем nmtui > «Активировать подключение» > выключаем и включаем интерфейс, на который ставили DNS.
-
-Скриншот (HQ-RTR, ens33 после смены DNS):
-```
-Имя профиля   ens33
-КОНФИГУРАЦИЯ IPv4 <Вручную>
-  Адреса       172.16.1.2/28
-  Шлюз         172.16.1.1
-  Серверы DNS  192.168.100.10
-```
-
-Проверяем на HQ-CLI:
-```bash
-ping br-rtr
-ping br-srv
-ping hq-rtr
-ping hq-srv
-ping ya.ru
-```
+> hq-cli = 192.168.200.2 - первый адрес пула. Если HQ-CLI получил другой - поправить A-запись.
 
 ---
 
-## 11. Часовой пояс
+## 6. BR-SRV
 
-На всех устройствах, согласно месту проведения экзамена:
 ```bash
+hostnamectl hostname br-srv.au-team.irpo
 timedatectl set-timezone Europe/Moscow
-timedatectl
 ```
-(проверить зону; время по заданию менять не просят)
+
+### IP
+| Интерфейс | IPv4 | Шлюз | DNS |
+|---|---|---|---|
+| ens33 | 172.30.200.10/28 | 172.30.200.1 | DNS стенда |
+
+```bash
+nmcli connection up ens33
+ping -c 2 8.8.8.8
+```
+
+### Пользователь sshuser
+```bash
+useradd -m -U -s /bin/bash -u 2027 sshuser
+passwd sshuser                  # P@ssw0rd два раза
+echo "sshuser ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+id sshuser                      # uid=2027
+```
+
+### SSH
+```bash
+echo "Authorized access only" > /etc/ssh/banner.txt
+nano /etc/ssh/sshd_config
+```
+```
+Port 2027
+AllowUsers sshuser
+MaxAuthTries 2
+Banner /etc/ssh/banner.txt
+```
+```bash
+semanage port -a -t ssh_port_t -p tcp 2027
+firewall-cmd --permanent --add-port=2027/tcp && firewall-cmd --reload   # только если firewalld активен
+sshd -t
+systemctl restart sshd
+```
+Проверка с BR-FW: `ssh -l sshuser 172.30.200.10 -p 2027`
 
 ---
 
-## Если на своём Proxmox что-то не работает
+## 7. HQ-CLI
 
-Отличия от тетради, которые вылезают на чистой RED OS (подробно - в `01-zadanie1-baznaya-nastroyka.md`):
+```bash
+hostnamectl hostname hq-cli.au-team.irpo
+timedatectl set-timezone Europe/Moscow
+```
 
-| Симптом | Что сделать |
-|---|---|
-| iptables не применяется / форвард режется | `systemctl disable --now firewalld`, потом заново `systemctl restart iptables` |
-| `dnf` не качает | на интерфейсе нет DNS - поставить 8.8.8.8 (или DNS своей сети) |
-| SSH на 2027 не пускает снаружи | `firewall-cmd --permanent --add-port=2027/tcp && firewall-cmd --reload` (если firewalld активен) |
-| sudoers ругается | кавычки из Word - писать прямые `"` |
-| ping по tun0 есть, OSPF-соседа нет | проверить `ip -d link show tun0` - должно быть `ttl 64` |
-| HQ не видит BR-SRV | `vtysh -c "show ip ospf neighbor"` на BR-RTR - BR-FW должен быть Full |
-| named: permission denied | `restorecon -Rv /opt/dns` или SELinux disabled |
+### VLAN200 по DHCP
+nmtui -> Добавить -> VLAN:
+| Имя профиля | Устройство | Родитель | VLAN ID | IPv4 |
+|---|---|---|---|---|
+| VLAN200 | ens33.200 | ens33 | 200 | Автоматически (DHCP), DNS вручную НЕ задавать |
+
+У самого ens33 IPv4 - отключено.
+```bash
+nmcli connection up VLAN200
+ip a show ens33.200            # 192.168.200.x/28
+cat /etc/resolv.conf           # nameserver 192.168.100.10, search au-team.irpo
+```
+
+Проверка на HQ-RTR (в отчёт по DHCP):
+```bash
+cat /var/lib/dhcpd/dhcpd.leases     # запись о выдаче адреса HQ-CLI
+```
+
+---
+
+## 8. Общий финал - DNS на всех
+
+На всех машинах со статикой (ISP не трогаем; HQ-RTR, BR-RTR, BR-FW, HQ-SRV, BR-SRV):
+nmtui -> поменять DNS со "DNS стенда" на **192.168.100.10**, домен поиска **au-team.irpo** -> OK ->
+Активировать подключение -> выключить и включить интерфейс.
+
+---
+
+## Итоговая проверка - с HQ-CLI
+
+```bash
+ping -c 2 hq-rtr
+ping -c 2 hq-srv
+ping -c 2 br-rtr
+ping -c 2 br-fw
+ping -c 2 br-srv
+ping -c 2 ya.ru
+nslookup br-srv.au-team.irpo
+nslookup 172.30.200.10
+```
+
+---
+
+## Быстрая диагностика
+
+| Симптом | Причина | Проверка |
+|---|---|---|
+| dnf не качает | нет DNS на интерфейсе или нет NAT на ISP/роутере | `cat /etc/resolv.conf`, `ping 8.8.8.8` |
+| sudoers/sshd ругается на синтаксис | кавычки или символы из Word | `visudo -c`, `sshd -t`, `cat -A файл` |
+| sshd не стартует на 2027 | нет semanage port | `semanage port -l \| grep ssh` |
+| ping через tun0 есть, OSPF-соседа нет | ttl туннеля не 64 / не совпал MD5-ключ | `ip -d link show tun0`, `show ip ospf neighbor` |
+| HQ не видит BR-SRV | ens34 на BR-RTR пассивный или нет network 172.30.100.0/30 | `vtysh -c "show ip route"` на HQ-RTR |
+| BR-SRV без интернета | нет шлюза 172.30.100.1 на BR-FW | `ip route` на BR-FW |
+| NAT не работает | опечатка в имени интерфейса, firewalld не выключен | `iptables -t nat -L -n -v`, `systemctl is-active firewalld` |
+| named не стартует | ошибка в зоне / дубль include / SELinux | `named-checkconf -z`, `journalctl -u named` |
+| HQ-CLI без адреса | dhcpd не запущен или VLAN200 не поднят | `systemctl status dhcpd`, `ip a` |
