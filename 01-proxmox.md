@@ -9,7 +9,7 @@
 
 ## Где мы отличаемся от тетради (и почему)
 
-- **OSPF passive**: в тетради `passive-interface ens34` (у нас ens19) - VLAN-ы ens19.100/200/999 это отдельные интерфейсы, OSPF на них остаётся включён. У нас `passive-interface default` + `no passive-interface` только на нужных - ровно как в задании
+- **OSPF без passive**: в тетради `passive-interface`, у нас его нет - на стенде FRR его игнорировал, без него всё работает. Просто перечисляем все network-и (минус: OSPF hello идут и в локальные сети, формально задание просит "только на туннеле")
 - **ISP / роутеры**: перед iptables выключаем firewalld, иначе они конфликтуют
 - **firewalld на HQ-SRV**: по заданию не нужен - выключаем (`systemctl disable --now firewalld`); на BR-SRV - если активен, открываем 2027/tcp
 - **DNS /opt/dns**: если named пишет `permission denied` - восстановить SELinux-контекст
@@ -266,8 +266,6 @@ vtysh
 conf t
 router ospf
  ospf router-id 172.16.1.2
- passive-interface default
- no passive-interface tun0
  network 10.10.10.0/30 area 0
  network 192.168.100.0/27 area 0
  network 192.168.200.0/28 area 0
@@ -375,9 +373,6 @@ vtysh
 conf t
 router ospf
  ospf router-id 172.16.2.2
- passive-interface default
- no passive-interface tun0
- no passive-interface ens19
  network 10.10.10.0/30 area 0
  network 172.30.100.0/30 area 0
 exit
@@ -389,7 +384,7 @@ do wr
 end
 exit
 ```
-> ens19 (к BR-FW) не пассивный - иначе BR-FW не станет соседом и сеть BR-SRV не попадёт в HQ.
+> network 172.30.100.0/30 обязателен - иначе BR-FW не станет соседом и сеть BR-SRV не попадёт в HQ.
 > Аутентификация только на tun0 (задание требует её между HQ-RTR и BR-RTR).
 
 ---
@@ -432,8 +427,6 @@ vtysh
 conf t
 router ospf
  ospf router-id 172.30.100.2
- passive-interface default
- no passive-interface ens18
  network 172.30.100.0/30 area 0
  network 172.30.200.0/28 area 0
 exit
@@ -729,7 +722,7 @@ nslookup 172.30.200.10
 | sudoers/sshd ругается на синтаксис | кавычки или символы из Word | `visudo -c`, `sshd -t`, `cat -A файл` |
 | sshd не стартует на 2027 | нет semanage port | `semanage port -l \| grep ssh` |
 | ping через tun0 есть, OSPF-соседа нет | ttl туннеля не 64 / не совпал MD5-ключ | `ip -d link show tun0`, `show ip ospf neighbor` |
-| HQ не видит BR-SRV | ens19 на BR-RTR пассивный или нет network 172.30.100.0/30 | `vtysh -c "show ip route"` на HQ-RTR |
+| HQ не видит BR-SRV | нет network 172.30.100.0/30 на BR-RTR | `vtysh -c "show ip route"` на HQ-RTR |
 | BR-SRV без интернета | нет шлюза 172.30.100.1 на BR-FW | `ip route` на BR-FW |
 | NAT не работает | опечатка в имени интерфейса, firewalld не выключен | `iptables -t nat -L -n -v`, `systemctl is-active firewalld` |
 | named не стартует | ошибка в зоне / дубль include / SELinux | `named-checkconf -z`, `journalctl -u named` |
