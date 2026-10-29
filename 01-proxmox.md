@@ -494,7 +494,6 @@ systemctl restart sshd
 > Запасной вариант из тетради: в `/etc/selinux/config` поставить `SELINUX=disabled` и `reboot`.
 
 Проверка с HQ-RTR: `ssh -l sshuser 192.168.100.10 -p 2027`
-
 ### DNS (bind)
 - [ ] основной DNS, прямые и обратные записи по таблице, пересылка на общедоступный DNS
 
