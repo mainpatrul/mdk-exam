@@ -699,3 +699,4 @@ nslookup 172.30.200.10
 | NAT не работает | опечатка в имени интерфейса, firewalld не выключен | `iptables -t nat -L -n -v`, `systemctl is-active firewalld` |
 | named не стартует | ошибка в зоне / дубль include / SELinux | `named-checkconf -z`, `journalctl -u named` |
 | HQ-CLI без адреса | dhcpd не запущен или VLAN200 не поднят | `systemctl status dhcpd`, `ip a` |
+
