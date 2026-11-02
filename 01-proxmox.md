@@ -41,33 +41,6 @@
 - HQ-SW - это мост vmbr3 в Proxmox; VLAN-ы ставят сами ВМ (ens19.100 и т.д.).
 - VLAN 999 (192.168.99.0/29) - сеть управления, только на HQ-RTR.
 
-## Линки в Proxmox (Hardware -> Add -> Network Device)
-
-Мосты: узел -> System -> Network -> Create -> Linux Bridge (IP не указывать, Bridge ports пусто). vmbr0 уже есть - выход в интернет.
-
-| Мост | Линк на схеме | Кто подключён |
-|---|---|---|
-| vmbr0 | Internet | ISP |
-| vmbr1 | ISP-HQ | ISP, HQ-RTR |
-| vmbr2 | ISP-BR | ISP, BR-RTR |
-| vmbr3 | HQ-NET + SRV-NET + CLI-NET (HQ-SW) | HQ-RTR, HQ-SRV, HQ-CLI |
-| vmbr4 | FW-NET | BR-RTR, BR-FW |
-| vmbr5 | BR-NET | BR-FW, BR-SRV |
-
-Карты добавлять строго по порядку: первая - ens18, вторая - ens19, третья - ens20.
-
-| ВМ | ens18 | ens19 | ens20 |
-|---|---|---|---|
-| ISP | vmbr0 (интернет) | vmbr1 (к HQ-RTR) | vmbr2 (к BR-RTR) |
-| HQ-RTR | vmbr1 (к ISP) | vmbr3 (VLAN-ы к HQ-SW) | - |
-| BR-RTR | vmbr2 (к ISP) | vmbr4 (к BR-FW) | - |
-| BR-FW | vmbr4 (к BR-RTR) | vmbr5 (к BR-SRV) | - |
-| HQ-SRV | vmbr3 | - | - |
-| HQ-CLI | vmbr3 | - | - |
-| BR-SRV | vmbr5 | - | - |
-
-VLAN Tag на картах - пусто, галку Firewall снять. Имена проверять `ip a`. В тетради преподавателя те же карты называются ens33/ens34/ens35 - ens33=ens18, ens34=ens19, ens35=ens20.
-
 ## Таблица адресации (в отчёт)
 
 | Имя устройства | IP-адрес | Шлюз по умолчанию |
