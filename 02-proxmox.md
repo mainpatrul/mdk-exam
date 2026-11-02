@@ -2,7 +2,7 @@
 
 Источники: `Рабочая_тетраль_ДЭ_Модуль_2_финал_поверенно.docx` (команды), `Additional.iso` (имена файлов, compose.yaml), адреса - `00-interfaces-addressing.md`.
 Отчёт: ФамилияУчастникаЗадание2 - скриншоты пунктов "в отчёт", читаемые.
-Статус: **на стенде этот файл целиком ещё не прогонялся.**
+Статус: прогнан на стенде 2026-11-02, настройка переживает холодный запуск всех ВМ.
 
 Настройка разложена **по устройствам** - заходишь на ВМ и делаешь всё сверху вниз.
 Порядок ВМ: ISP -> HQ-SRV -> BR-SRV -> HQ-CLI -> BR-RTR -> HQ-RTR -> BR-SRV (Ansible) -> проверка.
@@ -291,7 +291,7 @@ docker images
 cp /mnt/docker/compose.yaml .
 docker-compose -f compose.yaml up -d
 docker ps                                    # контейнеры db и testapp
-curl -sI http://localhost:8080 | head -1
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8080   # 200; curl -I даёт 405, testapp не принимает HEAD
 ```
 Проверка с HQ-CLI в браузере: http://172.30.200.10:8080
 
@@ -455,8 +455,8 @@ iptables -t nat -L PREROUTING -n
 
 Проверка с HQ-CLI:
 ```bash
-curl -sI http://172.16.2.2:8080 | head -1    # testapp, в браузере тот же сайт, что в п.6
-curl -sI http://172.16.1.2:8080 | head -1    # веб-приложение, сайт из п.7
+curl -s -o /dev/null -w "%{http_code}\n" http://172.16.2.2:8080    # testapp, в браузере тот же сайт, что в п.6
+curl -s -o /dev/null -w "%{http_code}\n" http://172.16.1.2:8080    # веб-приложение, сайт из п.7
 ssh -l sshuser 172.16.2.2 -p 2027            # попадаем на br-srv
 ssh -l sshuser 172.16.1.2 -p 2027            # попадаем на hq-srv
 ```
@@ -518,8 +518,8 @@ ansible -m ping all    # 4 раза SUCCESS и pong
 На ISP:
 ```bash
 chronyc clients                              # HQ-SRV, HQ-CLI, BR-RTR, BR-SRV (через NAT - адреса роутеров)
-curl -sI http://172.16.1.2:8080 | head -1
-curl -sI http://172.16.2.2:8080 | head -1
+curl -s -o /dev/null -w "%{http_code}\n" http://172.16.1.2:8080
+curl -s -o /dev/null -w "%{http_code}\n" http://172.16.2.2:8080
 ```
 На HQ-SRV: `cat /proc/mdstat`, `df -h /raid`, `exportfs -v`.
 На HQ-CLI: `df -h /mnt/nfs`, `realm list`.
@@ -529,18 +529,18 @@ curl -sI http://172.16.2.2:8080 | head -1
 
 ## Быстрая диагностика
 
-| Симптом | Причина | Проверка / решение |
-|---|---|---|
-| kinit или realm join: ошибка времени | часы разошлись | `chronyc sources`, `timedatectl` |
-| realm join не видит домен | нет строки в /etc/hosts, закрыт firewalld на BR-SRV | `cat /etc/hosts`, `systemctl is-active firewalld`, `realm discover au-team.irpo` |
-| realm join падает после запуска лишних служб | запущены smb/nmb/winbind/krb5kdc | перезагрузить BR-SRV, `systemctl is-active samba` |
-| hquser1 не находится | кэш sssd или нет ad_server | `sss_cache -E`, `systemctl restart sssd` |
-| sudo просит пароль или отказывает на cat | опечатка или "фигурные" кавычки | `visudo -c`, `sudo -l` |
-| samba/nfs/httpd не работают без явной ошибки | SELinux | `getenforce`, временно `setenforce 0`, `journalctl -xe` |
-| docker-compose качает mariadb или падает на pull | нет тега latest | `docker tag mariadb:10.11 mariadb:latest` |
-| index.php показывает код или ошибку 503 | не запущен обработчик php | `dnf install php-fpm -y`, `systemctl enable --now php-fpm`, `systemctl restart httpd` |
-| index.php: ошибка подключения к БД | неверные данные в файле | начало `/var/www/html/index.php`, `mysql -u web -p webdb` |
-| Проброс 8080 не открывается | сервис не отвечает внутри или опечатка в правиле | `curl` с роутера на адрес сервера, `iptables -t nat -L -n -v` |
-| ansible: нет /usr/bin/python | на узле только python3 | в ansible.cfg `interpreter_python = /usr/bin/python3` |
-| ansible: UNREACHABLE | не скопирован ключ или не тот пользователь | `ssh -p 2027 sshuser@192.168.100.10` |
-| RAID после перезагрузки стал md127 | нет записи в mdadm.conf | `cat /etc/mdadm.conf`, `cat /proc/mdstat` |
+| Симптом                                          | Причина                                             | Проверка / решение                                                                    |
+| ------------------------------------------------ | --------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| kinit или realm join: ошибка времени             | часы разошлись                                      | `chronyc sources`, `timedatectl`                                                      |
+| realm join не видит домен                        | нет строки в /etc/hosts, закрыт firewalld на BR-SRV | `cat /etc/hosts`, `systemctl is-active firewalld`, `realm discover au-team.irpo`      |
+| realm join падает после запуска лишних служб     | запущены smb/nmb/winbind/krb5kdc                    | перезагрузить BR-SRV, `systemctl is-active samba`                                     |
+| hquser1 не находится                             | кэш sssd или нет ad_server                          | `sss_cache -E`, `systemctl restart sssd`                                              |
+| sudo просит пароль или отказывает на cat         | опечатка или "фигурные" кавычки                     | `visudo -c`, `sudo -l`                                                                |
+| samba/nfs/httpd не работают без явной ошибки     | SELinux                                             | `getenforce`, временно `setenforce 0`, `journalctl -xe`                               |
+| docker-compose качает mariadb или падает на pull | нет тега latest                                     | `docker tag mariadb:10.11 mariadb:latest`                                             |
+| index.php показывает код или ошибку 503          | не запущен обработчик php                           | `dnf install php-fpm -y`, `systemctl enable --now php-fpm`, `systemctl restart httpd` |
+| index.php: ошибка подключения к БД               | неверные данные в файле                             | начало `/var/www/html/index.php`, `mysql -u web -p webdb`                             |
+| Проброс 8080 не открывается                      | сервис не отвечает внутри или опечатка в правиле    | `curl` с роутера на адрес сервера, `iptables -t nat -L -n -v`                         |
+| ansible: нет /usr/bin/python                     | на узле только python3                              | в ansible.cfg `interpreter_python = /usr/bin/python3`                                 |
+| ansible: UNREACHABLE                             | не скопирован ключ или не тот пользователь          | `ssh -p 2027 sshuser@192.168.100.10`                                                  |
+| RAID после перезагрузки стал md127               | нет записи в mdadm.conf                             | `cat /etc/mdadm.conf`, `cat /proc/mdstat`                                             |

@@ -293,7 +293,7 @@ docker images
 cp /mnt/docker/compose.yaml .
 docker-compose -f compose.yaml up -d
 docker ps                                    # контейнеры db и testapp
-curl -sI http://localhost:8080 | head -1
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8080   # 200; curl -I даёт 405, testapp не принимает HEAD
 ```
 Проверка с HQ-CLI в браузере: http://172.30.200.10:8080
 
@@ -457,8 +457,8 @@ iptables -t nat -L PREROUTING -n
 
 Проверка с HQ-CLI:
 ```bash
-curl -sI http://172.16.2.2:8080 | head -1    # testapp, в браузере тот же сайт, что в п.6
-curl -sI http://172.16.1.2:8080 | head -1    # веб-приложение, сайт из п.7
+curl -s -o /dev/null -w "%{http_code}\n" http://172.16.2.2:8080    # testapp, в браузере тот же сайт, что в п.6
+curl -s -o /dev/null -w "%{http_code}\n" http://172.16.1.2:8080    # веб-приложение, сайт из п.7
 ssh -l sshuser 172.16.2.2 -p 2027            # попадаем на br-srv
 ssh -l sshuser 172.16.1.2 -p 2027            # попадаем на hq-srv
 ```
@@ -520,8 +520,8 @@ ansible -m ping all    # 4 раза SUCCESS и pong
 На ISP:
 ```bash
 chronyc clients                              # HQ-SRV, HQ-CLI, BR-RTR, BR-SRV (через NAT - адреса роутеров)
-curl -sI http://172.16.1.2:8080 | head -1
-curl -sI http://172.16.2.2:8080 | head -1
+curl -s -o /dev/null -w "%{http_code}\n" http://172.16.1.2:8080
+curl -s -o /dev/null -w "%{http_code}\n" http://172.16.2.2:8080
 ```
 На HQ-SRV: `cat /proc/mdstat`, `df -h /raid`, `exportfs -v`.
 На HQ-CLI: `df -h /mnt/nfs`, `realm list`.

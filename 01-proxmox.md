@@ -10,6 +10,7 @@
 ## Где мы отличаемся от тетради (и почему)
 
 - **OSPF без passive**: в тетради `passive-interface`, у нас его нет - на стенде FRR его игнорировал, без него всё работает. Просто перечисляем все network-и (минус: OSPF hello идут и в локальные сети, формально задание просит "только на туннеле")
+- **FRR ждёт сеть**: без `override.conf` после перезагрузки маршруты OSPF становятся `inactive`, а dhcpd на HQ-RTR падает: они стартуют раньше, чем поднялись интерфейсы. Без override воспроизводилось, с ним чисто на 3 перезагрузках подряд
 - **ISP / роутеры**: перед iptables выключаем firewalld, иначе они конфликтуют
 - **firewalld на HQ-SRV**: по заданию не нужен - выключаем (`systemctl disable --now firewalld`); на BR-SRV - если активен, открываем 2027/tcp
 - **DNS /opt/dns**: если named пишет `permission denied` - восстановить SELinux-контекст
@@ -232,6 +233,21 @@ grep ospfd= /etc/frr/daemons      # ожидаем: ospfd=yes
 systemctl enable --now frr
 systemctl restart frr
 ```
+Чтобы FRR и dhcpd после перезагрузки стартовали после сети:
+```bash
+mkdir /etc/systemd/system/frr.service.d
+nano /etc/systemd/system/frr.service.d/override.conf
+```
+```
+[Unit]
+Wants=NetworkManager-wait-online.service
+After=NetworkManager-wait-online.service
+```
+```bash
+systemctl enable NetworkManager-wait-online
+systemctl daemon-reload
+```
+> В override только эти две строки: `After=network-online.target` даёт цикл зависимостей. У родителя VLAN должно быть "отключено", иначе загрузка ждёт DHCP лишнюю минуту.
 
 **Шаг 5. Настроить OSPF:**
 ```
@@ -341,6 +357,7 @@ grep ospfd= /etc/frr/daemons    # ожидаем: ospfd=yes
 systemctl enable --now frr
 systemctl restart frr
 ```
+Затем `override.conf` и две команды - как на HQ-RTR (шаг 4).
 ```
 vtysh
 conf t
@@ -395,6 +412,7 @@ grep ospfd= /etc/frr/daemons    # ожидаем: ospfd=yes
 systemctl enable --now frr
 systemctl restart frr
 ```
+Затем `override.conf` и две команды - как на HQ-RTR (шаг 4).
 ```
 vtysh
 conf t
@@ -696,6 +714,8 @@ nslookup 172.30.200.10
 | ping через tun0 есть, OSPF-соседа нет | ttl туннеля не 64 / не совпал MD5-ключ | `ip -d link show tun0`, `show ip ospf neighbor` |
 | HQ не видит BR-SRV | нет network 172.30.100.0/30 на BR-RTR | `vtysh -c "show ip route"` на HQ-RTR |
 | BR-SRV без интернета | нет шлюза 172.30.100.1 на BR-FW | `ip route` на BR-FW |
+| После reboot маршруты OSPF `inactive`, сосед Full, трафик уходит через ISP | FRR стартовал раньше сети, нет override.conf | `vtysh -c "show ip route ospf"`, сейчас `systemctl restart frr` |
+| После reboot HQ-CLI без адреса | dhcpd упал: стартовал раньше сети | `systemctl status dhcpd`, сейчас `systemctl restart dhcpd` |
 | NAT не работает | опечатка в имени интерфейса, firewalld не выключен | `iptables -t nat -L -n -v`, `systemctl is-active firewalld` |
 | named не стартует | ошибка в зоне / дубль include / SELinux | `named-checkconf -z`, `journalctl -u named` |
 | HQ-CLI без адреса | dhcpd не запущен или VLAN200 не поднят | `systemctl status dhcpd`, `ip a` |
